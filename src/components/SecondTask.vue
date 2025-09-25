@@ -58,7 +58,6 @@ const initializeSigma = () => {
     // Первый проход: собираем все ребра
     graph.forEachEdge((edge, attributes, source, target) => {
       const key = `${source}|${target}`
-      // const reverseKey = `${target}|${source}`
       edgesMap.set(key, { edge, attributes, source, target })
     })
 
@@ -67,14 +66,11 @@ const initializeSigma = () => {
       const key = `${source}|${target}`
       const reverseKey = `${target}|${source}`
 
-      // Если уже обработали эту пару, пропускаем
       if (pairToAggregate.has(key) || pairToAggregate.has(reverseKey)) {
         return
       }
 
-      // Проверяем, существует ли обратное ребро
       if (edgesMap.has(reverseKey)) {
-        // Это взаимная пара - назначаем обоим одинаковый aggregate
         pairToAggregate.set(key, currentAggregateId)
         pairToAggregate.set(reverseKey, currentAggregateId)
         currentAggregateId++
@@ -85,22 +81,117 @@ const initializeSigma = () => {
     graph.forEachEdge((_edge, attributes, source, target) => {
       const key = `${source}|${target}`
 
-      if (pairToAggregate.has(key)) {
-        attributes.agrigate = pairToAggregate.get(key)
-      }
+      if (pairToAggregate.has(key)) attributes.agrigate = pairToAggregate.get(key)
     })
-
-    // Вывод результатов для проверки
-    console.log('Mutual edges with aggregate IDs:')
-    graph.forEachEdge((_edge, attributes, source, target) => {
-      if (attributes.agrigate) {
-        console.log(`Edge ${source} → ${target}: aggregate = ${attributes.agrigate}`)
-      }
-    })
-    return pairToAggregate;
+    return pairToAggregate
   }
 
   findAllAggregate(graph)
+
+  const circleCanvas = document.createElement('canvas')
+  const circleCtx = circleCanvas.getContext('2d')!
+  circleCanvas.style.position = 'absolute'
+  circleCanvas.style.top = '0'
+  circleCanvas.style.left = '0'
+  circleCanvas.style.pointerEvents = 'none'
+  container.style.position = 'relative'
+  container.appendChild(circleCanvas)
+
+  const syncCanvasSize = () => {
+    const mainCanvas = container.querySelector('canvas') as HTMLCanvasElement
+    if (mainCanvas) {
+      circleCanvas.width = mainCanvas.width
+      circleCanvas.height = mainCanvas.height
+      circleCanvas.style.width = mainCanvas.style.width
+      circleCanvas.style.height = mainCanvas.style.height
+    }
+  }
+
+  const drawAggregateCircles = () => {
+    syncCanvasSize()
+    circleCtx.clearRect(0, 0, circleCanvas.width, circleCanvas.height)
+
+    const aggregateGroups = new Map()
+
+    graph.forEachEdge((_edge, attributes, source, target) => {
+      if (attributes.agrigate) {
+        const aggId = attributes.agrigate
+        if (!aggregateGroups.has(aggId)) aggregateGroups.set(aggId, [])
+        aggregateGroups.get(aggId).push({source, target, attributes})
+      }
+    })
+
+    aggregateGroups.forEach((edges, _aggId) => {
+      if (edges.length === 2) {
+        const edge1 = edges[0]
+        const edge2 = edges[1]
+
+        const edge1Points = getCurvedEdgePoints(edge1, graph, renderer)
+        const edge2Points = getCurvedEdgePoints(edge2, graph, renderer)
+
+        const mid1 = edge1Points[Math.floor(edge1Points.length / 2)]!
+        const mid2 = edge2Points[Math.floor(edge2Points.length / 2)]!
+
+        const t = .5
+        const x = mid1.x + (mid2.x - mid1.x) * t
+        const y = mid1.y + (mid2.y - mid1.y) * t
+
+        const angle = Math.atan2(mid2.y - mid1.y, mid2.x - mid1.x)
+
+        const distance = Math.sqrt(Math.pow(mid2.x - mid1.x, 2) + Math.pow(mid2.y - mid1.y, 2))
+        const radiusX = Math.max(distance / 2, 10) + 10
+        const radiusY = Math.max(distance / 4, 15)
+
+        circleCtx.save()
+        circleCtx.translate(x, y)
+        circleCtx.rotate(angle)
+
+        circleCtx.beginPath()
+        circleCtx.ellipse(0, 0, radiusX, radiusY, 0, 0, 2 * Math.PI)
+        circleCtx.strokeStyle = 'green'
+        circleCtx.lineWidth = 1
+        circleCtx.stroke()
+
+        circleCtx.restore()
+      }
+    })
+  }
+
+  const getCurvedEdgePoints = (edge: any, graph: MultiGraph, renderer: Sigma) => {
+    const sourceNode = graph.getNodeAttributes(edge.source)
+    const targetNode = graph.getNodeAttributes(edge.target)
+
+    const sourceCoords = renderer.graphToViewport({x: sourceNode.x, y: sourceNode.y})
+    const targetCoords = renderer.graphToViewport({x: targetNode.x, y: targetNode.y})
+
+    const points = []
+    const steps = 10 // Количество точек для аппроксимации кривой
+
+    const curvature = edge.attributes?.curvature || 0.25
+
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps
+
+      // Квадратичная кривая Безье с контрольной точкой
+      const controlX = (sourceCoords.x + targetCoords.x) / 2 +
+          (targetCoords.y - sourceCoords.y) * curvature
+      const controlY = (sourceCoords.y + targetCoords.y) / 2 -
+          (targetCoords.x - sourceCoords.x) * curvature
+
+      // Вычисляем точку на кривой Безье
+      const x = Math.pow(1 - t, 2) * sourceCoords.x +
+          2 * (1 - t) * t * controlX +
+          Math.pow(t, 2) * targetCoords.x
+
+      const y = Math.pow(1 - t, 2) * sourceCoords.y +
+          2 * (1 - t) * t * controlY +
+          Math.pow(t, 2) * targetCoords.y
+
+      points.push({ x, y })
+    }
+
+    return points
+  }
 
 
   //
@@ -119,6 +210,9 @@ const initializeSigma = () => {
     graph.setNodeAttribute(draggedNode, "highlighted", true)
     if (!renderer.getCustomBBox()) renderer.setCustomBBox(renderer.getBBox())
   })
+
+  // Обновляем рисование при изменениях
+  renderer.on('afterRender', drawAggregateCircles)
 
   // On mouse move
   renderer.on("moveBody", ({event}) => {
@@ -202,6 +296,13 @@ onUnmounted(() => {
 <template>
   <div class="flex">
     <div id="sigma-container"></div>
+    <p>
+      Тут конечно не обошлось без нейросети, так как рассчитывая кривые безье я бы сильно увеличил время работы и мог
+      не успеть. Здесь кроме как нового слоя канвас у меня нет идей как это можно реализовать ещё.
+
+      P.S. Ещё я не успел проверить на корректную работу при добавлении новых ребер в существующую агрегацию.
+    </p>
+
   </div>
 </template>
 
@@ -220,5 +321,9 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+}
+
+p {
+  margin: 20px 0;
 }
 </style>
